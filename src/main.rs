@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-// TODO refactor to Result<JsonValue, JsonError>
 #[derive(Debug, Clone, PartialEq)]
 pub enum JsonValue {
     Null,
@@ -8,8 +7,16 @@ pub enum JsonValue {
     Num(f64),
     Str(String),
     Array(Vec<JsonValue>),
-    Object(HashMap<String, JsonValue>),
-    ParseError(String)
+    Object(HashMap<String, JsonValue>)
+}
+
+impl JsonValue {
+    pub fn get_string(&self) -> Option<String> {
+        match *self {
+            JsonValue::Str(ref s) => Some(s.clone()),
+            _ => None
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -38,7 +45,7 @@ impl<'a> JsonParser<'a> {
         let (_, cur_char) = iter.next().expect("Failed to get the next character");
         let (next_pos, _) = iter.next().unwrap_or((1, ' '));
         self.pos += next_pos;
-        println!("{}", cur_char);
+        println!("c = {}", cur_char);
         return cur_char;
     }
 
@@ -49,6 +56,11 @@ impl<'a> JsonParser<'a> {
     fn peek_next(&self) -> char {
         self.input[self.pos..].chars().next().expect("Failed to peek next")
     }
+
+    fn peek_current(&self) -> char {
+        self.input[self.pos..].chars().nth(0).unwrap()
+    }
+     
 
     fn consume_text(&mut self, text: &str) -> Option<String> {
         let mut buf = String::new();
@@ -81,7 +93,7 @@ impl<'a> JsonParser<'a> {
     fn parse_null(&mut self) -> JsonResult {
         match self.consume_text("null") {
             Some(_) => Ok(JsonValue::Null),
-            None => Err(JsonError::ParseError("Expected null".to_string()))
+            None => parse_error("Expected null".to_string())
         }
     }
 
@@ -95,7 +107,7 @@ impl<'a> JsonParser<'a> {
             match n {
                 Ok(num) => return Ok(JsonValue::Num(num)),
                 Err(why) => {
-                    return Err(JsonError::ParseError(why.to_string()));
+                    return parse_error(why.to_string());
                 }
             }
         
@@ -122,10 +134,10 @@ impl<'a> JsonParser<'a> {
                 if found_end {
                     Ok(JsonValue::Str(s))
                 } else {
-                   Err(JsonError::ParseError("Unclosed string literal".to_string()))
+                   parse_error("Unclosed string literal".to_string())
                 }
             },
-            _ => Err(JsonError::ParseError(String::new()))
+            _ => parse_error(format!("Expected double quote, got {}", c))
         }
     }
 
@@ -133,135 +145,250 @@ impl<'a> JsonParser<'a> {
         let c = self.peek_next();
         match c {
             'f' => {
+                println!("parsing false");
                 self.consume_text("false");
                 Ok(JsonValue::Bool(false))
             }
             't' => {
+                println!("parsing true");
                 self.consume_text("true");
                 Ok(JsonValue::Bool(true))
             }
             _ => {
-                let err = format!("Expected true or false, got {}", c);
-                Ok(JsonValue::ParseError(err))
+                parse_error(format!("Expected true or false, got {}", c))
             }
         }
     }
 
     fn parse_value(&mut self) -> JsonResult {
-        self.parse_bool()
-            .or(self.parse_string())
-            .or(self.parse_num())
-            .or(self.parse_null())
+        let p = vec![self.parse_bool(),
+                     self.parse_string(),
+                     self.parse_num(),
+                     self.parse_null(),
+                     self.parse_array(),
+                     self.parse_object()];
+
+        first_ok(p)
     }
 
     fn parse_array(&mut self) -> JsonResult {
         let c = self.peek_next();
         match c {
             '[' => {
-                let mut array = Vec::new();
+                // Consume the opening bracket
                 self.consume_char();
+                let mut array = Vec::new();
                 
-                while !self.eof() && self.peek_next() != ']' {
-                    println!("self.pos before parse_value: {}", self.pos);
-                    let value = try!(self.parse_value());
-                    println!("Parsed value: {:?}", value);
-                    println!("self.pos after parse_value: {}", self.pos);
-                    array.push(value);
-                    let comma = self.peek_next();
-                    if comma == ']' {
+                loop {
+                    let value = self.parse_value();
+                    match value {
+                        Ok(v) => array.push(v),
+                        Err(why) => { return parse_error(format!("{:?}", why)); }
+                    }
+                    let next = self.peek_next();
+                    if next == ',' {
+                        self.consume_char();
+                        continue;
+                    }
+                    if next == ']' {
+                        self.consume_char();
                         return Ok(JsonValue::Array(array));
                     }
-                    if comma != ',' {
-                        return Err(JsonError::ParseError(format!("expected comma, got {}", comma)));
-                    }
-
-                    self.consume_char();
                 }
-                
-                Ok(JsonValue::Array(array))
             }
-            _ => Err(JsonError::ParseError(format!("Expected [, got {}", c)))
-            
+            _ => parse_error(format!("Got {}, expected [", c))
         }
     }
-}
 
-#[test]
-fn parse_null() {
-    let mut parser = JsonParser::new("null");
-    let result = parser.parse_null();
-    assert_eq!(result, Ok(JsonValue::Null));
-}
-
-#[test]
-fn parse_number() {
-    let mut parser = JsonParser::new("4.2342");
-
-    let result = parser.parse_num();
-    assert_eq!(result, Ok(JsonValue::Num(4.2342)));
-}
-
-#[test]
-fn parse_number_2() {
-    let mut parser = JsonParser::new("16237");
-    let result = parser.parse_num();
-    assert_eq!(result, Ok(JsonValue::Num(16237.0)));
-}
-
-#[test]
-fn parse_number_error() {
-    let mut parser = JsonParser::new("abcdef");
-    let result = parser.parse_num();
-    match result {
-        Ok(_) => { assert!(false); }
-        Err(_) => { return; }
-    }
-}
-
-#[test]
-fn parse_string() {
-    let mut parser = JsonParser::new("\"String\"");
-    let result = parser.parse_string();
-    assert_eq!(result, Ok(JsonValue::Str("String".to_string())));
-}
-
-#[test]
-fn parse_string_error() {
-    let mut parser = JsonParser::new("\"String");
-    let result = parser.parse_string();
-    match result {
-        Ok(_) => { assert!(false); }
-        Err(_) => { return; }
-    }
-    
-}
-
-#[test]
-fn parse_bool() {
-    let mut parser = JsonParser::new("false");
-    let result = parser.parse_bool();
-    assert_eq!(result, Ok(JsonValue::Bool(false)));
-
-    parser = JsonParser::new("true");
-    let result = parser.parse_bool();
-    assert_eq!(result, Ok(JsonValue::Bool(true)));
-}
-
-#[test]
-fn parse_array() {
-    let mut parser = JsonParser::new("[true,true,true]");
-    let result = parser.parse_array();
-    match result {
-        Ok(val) => {
-            let expected = JsonValue::Array(vec![JsonValue::Bool(true), JsonValue::Bool(true), JsonValue::Bool(true)]);
-            assert_eq!(val, expected);
+    fn parse_object(&mut self) -> JsonResult {
+        if self.eof() {
+            return parse_error("EOF".to_string());
         }
-        Err(why) => {
-            panic!("{:?}", why);
+        
+        let c = self.peek_next();
+        match c {
+            '{' => {
+                let mut object = HashMap::new();
+                self.consume_char();
+                loop {
+                    println!("Trying to parse string..");
+                    let key = self.parse_string();
+                    let key_string = match key {
+                        Ok(s) => s.get_string().unwrap(),
+                        Err(why) => return parse_error(format!("{:?}", why))
+                    };
+
+                    println!("key: {}", key_string);
+                    
+                    let next = self.peek_next();
+                    if next != ':' {
+                        return parse_error(format!("Expected :, got {}", next));
+                    }
+                    // Consume the colon
+                    self.consume_char();
+                    let value = self.parse_value();
+                    println!("value = {:?}", value);
+                    match value {
+                        Ok(v) => object.insert(key_string, v),
+                        Err(why) => return parse_error(format!("{:?}", why))
+                    };
+
+                    println!("next character = {}", next);
+                    let next = self.peek_next();
+                    if next == ',' {
+                        self.consume_char();
+                        println!("Found ',', continuing");
+                        continue;
+                    }
+                    if next == '}' {
+                        self.consume_char();
+                        println!("returning {:?}", object);
+                        return Ok(JsonValue::Object(object));
+                    }
+                }
+            },
+            _ => parse_error(format!("Got {}, expected {{", c))
         }
     }
+
 }
 
+fn parse_error(s: String) -> JsonResult {
+    Err(JsonError::ParseError(s))
+}
+
+fn first_ok(results: Vec<JsonResult>) -> JsonResult {
+    for r in results.iter() {
+        if r.is_ok() {
+            return r.clone();
+        }
+    }
+    results[0].clone()
+}
+
+mod tests {
+    use super::*;
+    use super::JsonValue::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn parse_null() {
+        let mut parser = JsonParser::new("null");
+        let result = parser.parse_null();
+        assert_eq!(result, Ok(Null));
+    }
+
+    #[test]
+    fn parse_number() {
+        let mut parser = JsonParser::new("4.2342");
+
+        let result = parser.parse_num();
+        assert_eq!(result, Ok(Num(4.2342)));
+    }
+
+    #[test]
+    fn parse_number_2() {
+        let mut parser = JsonParser::new("16237");
+        let result = parser.parse_num();
+        assert_eq!(result, Ok(Num(16237.0)));
+    }
+
+    #[test]
+    fn parse_number_error() {
+        let mut parser = JsonParser::new("abcdef");
+        let result = parser.parse_num();
+        match result {
+            Ok(_) => { assert!(false); }
+            Err(_) => { return; }
+        }
+    }
+
+    #[test]
+    fn parse_string() {
+        let mut parser = JsonParser::new("\"String\"");
+        let result = parser.parse_string();
+        assert_eq!(result, Ok(Str("String".to_string())));
+    }
+
+    #[test]
+    fn parse_string_error() {
+        let mut parser = JsonParser::new("\"String");
+        let result = parser.parse_string();
+        match result {
+            Ok(_) => { assert!(false); }
+            Err(_) => { return; }
+        }
+        
+    }
+
+    #[test]
+    fn parse_bool() {
+        let mut parser = JsonParser::new("false");
+        let result = parser.parse_bool();
+        assert_eq!(result, Ok(Bool(false)));
+
+        parser = JsonParser::new("true");
+        let result = parser.parse_bool();
+        assert_eq!(result, Ok(Bool(true)));
+    }
+
+    #[test]
+    fn parse_bool_array() {
+        let mut parser = JsonParser::new("[true,true,true]");
+        let result = parser.parse_array();
+        match result {
+            Ok(val) => {
+                let expected = Array(vec![Bool(true), Bool(true), Bool(true)]);
+                assert_eq!(val, expected);
+            }
+            Err(why) => {
+                panic!("{:?}", why);
+            }
+        }
+    }
+
+    #[test]
+    fn parse_num_array() {
+        let mut parser = JsonParser::new("[1.2,4.2,1.2,4.5]");
+        let result = parser.parse_array();
+        match result {
+            Ok(value) => {
+                let expected = Array(vec![Num(1.2), Num(4.2), Num(1.2), Num(4.5)]);
+                assert_eq!(expected, value);
+            }
+            Err(err) => {
+                panic!("{:?}", err);
+            }
+        }
+    }
+
+    #[test]
+    fn parse_nested_array() {
+        let mut parser = JsonParser::new("[[true,true],[true,false]]");
+        let result = parser.parse_value();
+        match result {
+            Ok(value) => {
+                let expected = Array(vec![
+                    Array(vec![Bool(true), Bool(true)]),
+                    Array(vec![Bool(true), Bool(false)])]);
+                assert_eq!(expected, value);
+            }
+            Err(err) => {
+                panic!("{:?}", err);
+            }
+        }
+    }
+
+    #[test]
+    fn parse_object_simple() {
+        let mut parser = JsonParser::new("{\"label\":1.5}");
+        let result = parser.parse_object();
+
+        let mut obj = HashMap::new();
+        obj.insert("label".to_string(), Num(1.5));
+
+        assert_eq!(Object(obj), result.unwrap());
+    }
+}
 fn main() {
-
 }
