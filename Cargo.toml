@@ -1,0 +1,11 @@
+[package]
+
+name = "json-rs"
+version = "0.0.1"
+authors = ["Martin Tomasi <martin.tomasi@gmail.com>"]
+
+[dependencies]
+time = "*"
+
+[profile.release]
+debug = true
