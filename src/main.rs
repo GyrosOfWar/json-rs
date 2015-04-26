@@ -21,36 +21,64 @@ pub enum JsonValue {
 }
 
 impl JsonValue {
-	pub fn find(&self, idx: &str) -> Option<&JsonValue> {
-		match self {
-			&Object(ref map) => map.get(idx),
-			_ => None
-		}
+    pub fn find(&self, idx: &str) -> Option<&JsonValue> {
+	match self {
+	    &Object(ref map) => map.get(idx),
+	    _ => None
 	}
-
-    fn get_string(self) -> Option<String> {
+    }
+    
+    pub fn get_string(self) -> Option<String> {
         match self {
             JsonValue::Str(s) => Some(s),
             _ => None
         }
     }
+
+    pub fn get_bool(self) -> Option<bool> {
+        match self {
+            Bool(b) => Some(b),
+            _ => None
+        }
+    }
+
+    pub fn get_num(self) -> Option<f64> {
+        match self {
+            Num(n) => Some(n),
+            _ => None
+        }
+    }
+
+    pub fn get_array(self) -> Option<Vec<JsonValue>> {
+        match self {
+            Array(vec) => Some(vec),
+            _ => None
+        }
+    }
+    pub fn get_object(self) -> Option<HashMap<String, JsonValue>> {
+        match self {
+            Object(map) => Some(map),
+            _ => None
+        }
+    }
+       
 }
 
 impl Index<usize> for JsonValue {
-	type Output = JsonValue;
-	fn index(&self, index: usize) -> &JsonValue {
-		match self {
-			&Array(ref vec) => &vec[index],
-			_ => panic!("Can only index arrays with usize!")
-		}
+    type Output = JsonValue;
+    fn index(&self, index: usize) -> &JsonValue {
+	match self {
+	    &Array(ref vec) => &vec[index],
+	    _ => panic!("Can only index arrays with usize!")
 	}
+    }
 }
 
 impl<'a> Index<&'a str> for JsonValue {
-	type Output = JsonValue;
-	fn index(&self, idx: &str) -> &JsonValue {
-		self.find(idx).expect("Can only index objects with &str!")
-	}
+    type Output = JsonValue;
+    fn index(&self, idx: &str) -> &JsonValue {
+	self.find(idx).expect("Can only index objects with &str!")
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
