@@ -9,7 +9,14 @@ use std::env::args;
 use std::fs::File;
 use std::io::prelude::*;
 use std::ops::Index;
+use JsonValue::*;
+use JsonError::*;
 
+
+/// Representation of a JSON value. An array is
+/// represented as a Vec of JSON values, an
+/// object is a map from string keys to JSON values
+/// and numbers are stored as f64 for simplicity.
 #[derive(Debug, Clone, PartialEq)]
 pub enum JsonValue {
     Null,
@@ -64,6 +71,7 @@ impl JsonValue {
        
 }
 
+/// Indexing a JSON array
 impl Index<usize> for JsonValue {
     type Output = JsonValue;
     fn index(&self, index: usize) -> &JsonValue {
@@ -74,6 +82,7 @@ impl Index<usize> for JsonValue {
     }
 }
 
+/// Indexing a JSON object
 impl<'a> Index<&'a str> for JsonValue {
     type Output = JsonValue;
     fn index(&self, idx: &str) -> &JsonValue {
@@ -81,6 +90,9 @@ impl<'a> Index<&'a str> for JsonValue {
     }
 }
 
+/// Only simple error codes for now, I should probably
+/// wrap this in an actual Error struct that also stores
+/// line/column information about where the error occurred.
 #[derive(Debug, Clone, PartialEq)]
 pub enum JsonError {
     UnclosedStringLiteral,
@@ -119,20 +131,20 @@ impl fmt::Display for JsonError {
     }
 }
 
+/// Result of most parsing functions. Either we succeed in parsing
+/// and a value is returned or ther was an error and we return
+/// an error code.
 pub type JsonResult = Result<JsonValue, JsonError>;
 
-
-// TODO add line and col
-// TODO replace input string/pos by <T: Iterator<Item = char>>
+/// The parser stores an iterator over characters,
+/// information about the current position (line/col)
+/// and the current character.
 pub struct JsonParser<T> {
     iter: T,
     line: usize,
     col: usize,
     ch: Option<char>
 }
-
-use JsonValue::*;
-use JsonError::*;
 
 impl<T: Iterator<Item = char>> JsonParser<T> {
     pub fn new(input: T) -> JsonParser<T> {
@@ -146,6 +158,7 @@ impl<T: Iterator<Item = char>> JsonParser<T> {
         parser
     }
 
+    // Advances the character iterator by one and returns the new character
     #[inline]
     fn consume_char(&mut self) -> char {
         self.ch = self.iter.next();
@@ -155,20 +168,24 @@ impl<T: Iterator<Item = char>> JsonParser<T> {
         } else {
             self.col += 1;
         }
-
         self.ch.unwrap_or('\x00')
     }
 
+    // Is the current character equal to c?
     #[inline]
     fn ch_is(&self, c: char) -> bool {
         self.ch == Some(c)
     }
 
+    // Are we at the end of the file?
     #[inline]
     fn eof(&self) -> bool {
         self.ch.is_none()
     }
 
+    // Advances the input by the length of the passed text.
+    // If one of the characters in the input is not equal
+    // to the corresponding character in the text, returns None.
     fn consume_text(&mut self, text: &str) -> Option<String> {
         let mut buf = String::new();
         self.consume_whitespace();
@@ -200,17 +217,15 @@ impl<T: Iterator<Item = char>> JsonParser<T> {
             self.ch_is('\t') || self.ch_is('\r')
     }
 
+    // Consumes whitespace until the next non-whitespace character is reached
     #[inline]
     fn consume_whitespace(&mut self) {
         while self.ch_is_whitespace() {
-            if !self.ch_is_whitespace() {
-            	return;
-            } else {
-            	self.consume_char();
-            }
+            self.consume_char();
         }
     }
 
+    // Consumes a numerical literal and returns its value as a string.
     #[inline]
     fn consume_num(&mut self) -> String {
         let mut result = String::new();
@@ -223,7 +238,7 @@ impl<T: Iterator<Item = char>> JsonParser<T> {
             }
         result
     }
-    
+    // Parses the JSON null value.
     fn parse_null(&mut self) -> JsonResult {
         match self.consume_text("null") {
             Some(_) => Ok(Null),
@@ -231,6 +246,7 @@ impl<T: Iterator<Item = char>> JsonParser<T> {
         }
     }
 
+    // Parses a JSON number.
     fn parse_num(&mut self) -> JsonResult {
         self.consume_whitespace();
         
@@ -249,7 +265,8 @@ impl<T: Iterator<Item = char>> JsonParser<T> {
             Err(NumberParsing)
         }
     }
-
+    
+    // Parses a JSON string value.
     fn parse_string(&mut self) -> JsonResult {
         self.consume_whitespace();
         
@@ -277,6 +294,7 @@ impl<T: Iterator<Item = char>> JsonParser<T> {
         }
     }
 
+    // Parses a JSON boolean.
     fn parse_bool(&mut self) -> JsonResult {
         self.consume_whitespace();
         
@@ -292,7 +310,12 @@ impl<T: Iterator<Item = char>> JsonParser<T> {
             Err(ExpectedBool)
         }   
     }
-
+    // Parses any JSON value, this is the entry point
+    // for the parser. Tries each possible parse until
+    // one fits. If there are no suitable parses,
+    // returns the most recent error. Error handling
+    // this way isn't exacly ideal because the most recent
+    // error is not always the most fitting one.
     fn parse_value(&mut self) -> JsonResult {        
         let p = vec![self.parse_bool(),
                      self.parse_string(),
@@ -310,7 +333,8 @@ impl<T: Iterator<Item = char>> JsonParser<T> {
         
         Err(most_recent_error.expect("Bug!"))
     }
-
+    
+    // Parses a JSON array of values. Example: [true, false, 1, "hello"]
     fn parse_array(&mut self) -> JsonResult {
         if self.ch_is('[') {
             // Consume the opening bracket
@@ -323,11 +347,12 @@ impl<T: Iterator<Item = char>> JsonParser<T> {
                     Ok(v) => array.push(v),
                     e @ Err(_) => return e
                 }
-                
+                // Parse the next value in the array
                 if self.ch_is(',') {
                     self.consume_char();
                     continue;
                 }
+                // Reached the end of the array, return it
                 if self.ch_is(']') {
                     self.consume_char();
                     return Ok(Array(array));
@@ -338,7 +363,7 @@ impl<T: Iterator<Item = char>> JsonParser<T> {
             Err(UnclosedArray)
         }
     }
-
+    // Parses a JSON object. Example: {"key": [1, 2, 3]}
     fn parse_object(&mut self) -> JsonResult {
         if self.eof() {
             return Err(EndOfFile);
@@ -349,7 +374,7 @@ impl<T: Iterator<Item = char>> JsonParser<T> {
             self.consume_char();
             loop {
                 self.consume_whitespace();
-
+                // The key is always a string value.
                 let key = self.parse_string();
                 let key_string = match key {
                     Ok(s) => s.get_string().unwrap(),
@@ -358,24 +383,27 @@ impl<T: Iterator<Item = char>> JsonParser<T> {
 
                 self.consume_whitespace();
 
+                // The separating colon between key and value
                 if !self.ch_is(':') {
                     return Err(ExpectedColon);
                 }
                 self.consume_whitespace();
-
-                // Consume the colon
                 self.consume_char();
+
+                // Parse any value
                 let value = self.parse_value();
                 match value {
                     Ok(v) => object.insert(key_string, v),
                     e @ Err(_) => return e
                 };
                 self.consume_whitespace();
-                
+
+                // Continue with the next value
                 if self.ch_is(',') {
                     self.consume_char();
                     continue;
                 }
+                // End of the current object
                 if self.ch_is('}') {
                     self.consume_char();
                     return Ok(Object(object));
