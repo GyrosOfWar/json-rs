@@ -1,15 +1,14 @@
-#![feature(test, str_char)]
+//#![feature(test)]
 
 extern crate time;
-extern crate test;
+//extern crate test;
 
 use std::collections::HashMap;
 use std::fmt;
 use std::env::args;
 use std::fs::File;
 use std::io::prelude::*;
-use std::io::BufReader;
-use std::path::Path;
+use std::ops::Index;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum JsonValue {
@@ -22,12 +21,36 @@ pub enum JsonValue {
 }
 
 impl JsonValue {
+	pub fn find(&self, idx: &str) -> Option<&JsonValue> {
+		match self {
+			&Object(ref map) => map.get(idx),
+			_ => None
+		}
+	}
+
     fn get_string(self) -> Option<String> {
         match self {
             JsonValue::Str(s) => Some(s),
             _ => None
         }
     }
+}
+
+impl Index<usize> for JsonValue {
+	type Output = JsonValue;
+	fn index(&self, index: usize) -> &JsonValue {
+		match self {
+			&Array(ref vec) => &vec[index],
+			_ => panic!("Can only index arrays with usize!")
+		}
+	}
+}
+
+impl<'a> Index<&'a str> for JsonValue {
+	type Output = JsonValue;
+	fn index(&self, idx: &str) -> &JsonValue {
+		self.find(idx).expect("Can only index objects with &str!")
+	}
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -73,51 +96,60 @@ pub type JsonResult = Result<JsonValue, JsonError>;
 
 // TODO add line and col
 // TODO replace input string/pos by <T: Iterator<Item = char>>
-pub struct JsonParser<'a> {
-    input: &'a str,
-    pos: usize
+pub struct JsonParser<T> {
+    iter: T,
+    line: usize,
+    col: usize,
+    ch: Option<char>
 }
 
 use JsonValue::*;
 use JsonError::*;
 
-impl<'a> JsonParser<'a> {
-    pub fn new(input: &'a str) -> JsonParser<'a> {
-        JsonParser {
-            input: input, 
-            pos: 0
-        }
+impl<T: Iterator<Item = char>> JsonParser<T> {
+    pub fn new(input: T) -> JsonParser<T> {
+        let mut parser = JsonParser {
+            iter: input,
+            line: 1,
+            col: 0,
+            ch: Some('\x00')
+        };
+        parser.consume_char();
+        parser
     }
 
     #[inline]
     fn consume_char(&mut self) -> char {
-        let mut iter = self.input[self.pos..].char_indices();
-        let (_, cur_char) = iter.next().expect("Failed to get the next character");
-        let (next_pos, _) = iter.next().unwrap_or((1, ' '));
-        self.pos += next_pos;
-        return cur_char;
+        self.ch = self.iter.next();
+        if self.ch_is('\n') {
+            self.line += 1;
+            self.col = 1;
+        } else {
+            self.col += 1;
+        }
+
+        self.ch.unwrap_or('\x00')
+    }
+
+    #[inline]
+    fn ch_is(&self, c: char) -> bool {
+        self.ch == Some(c)
     }
 
     #[inline]
     fn eof(&self) -> bool {
-        self.pos >= self.input.len()
+        self.ch.is_none()
     }
-
-    #[inline]
-    fn peek_next(&self) -> char {
-        self.input[self.pos..].chars().next().expect("Failed to peek next")
-    } 
 
     fn consume_text(&mut self, text: &str) -> Option<String> {
         let mut buf = String::new();
         self.consume_whitespace();
 
         for c in text.chars() {
-            let d = self.peek_next();
-            if c != d {
+            if !self.ch_is(c) {
                 return None;
             }
-            self.consume_char();
+            let d = self.consume_char();
             buf.push(d);
             
         }
@@ -127,20 +159,43 @@ impl<'a> JsonParser<'a> {
     }
 
     #[inline]
-    fn consume_whitespace(&mut self) {
-        self.consume_while(|c| c.is_whitespace() || c == '\n' || c == '\r');
+    fn ch_is_digit(&self) -> bool {
+        match self.ch.unwrap_or('\x00') {
+            '0'...'9' => true,
+            _ => false
+        }
     }
-    
-    fn consume_while<F: Fn(char) -> bool>(&mut self, test: F) -> String {
-        let mut result = String::new();
-        while !self.eof() && test(self.peek_next()) {
-            let c = self.consume_char();
-            result.push(c);
-        }       
 
+    #[inline]
+    fn ch_is_whitespace(&self) -> bool {
+        self.ch_is(' ') || self.ch_is('\n') ||
+            self.ch_is('\t') || self.ch_is('\r')
+    }
+
+    #[inline]
+    fn consume_whitespace(&mut self) {
+        while self.ch_is_whitespace() {
+            if !self.ch_is_whitespace() {
+            	return;
+            } else {
+            	self.consume_char();
+            }
+        }
+    }
+
+    #[inline]
+    fn consume_num(&mut self) -> String {
+        let mut result = String::new();
+        self.consume_whitespace();
+
+        while self.ch_is_digit() || self.ch_is('.') || self.ch_is('e') || self.ch_is('E')
+            || self.ch_is('E') || self.ch_is('-') || self.ch_is('+') {
+                result.push(self.ch.unwrap());
+                self.consume_char();
+            }
         result
     }
-
+    
     fn parse_null(&mut self) -> JsonResult {
         match self.consume_text("null") {
             Some(_) => Ok(Null),
@@ -150,19 +205,18 @@ impl<'a> JsonParser<'a> {
 
     fn parse_num(&mut self) -> JsonResult {
         self.consume_whitespace();
-        let c = self.peek_next();
         
-        if c.is_digit(10) || c == '-' {
-            let num_str = self.consume_while(|c| c.is_digit(10) || c == '.' || c == 'e' || c == 'E' || c == '-' || c == '+');
-           
+        if self.ch_is_digit() || self.ch_is('-') {
+            let num_str = self.consume_num();
+            
             let n = num_str.parse::<f64>();
             match n {
                 Ok(num) => return Ok(Num(num)),
-                Err(why) => {
+                Err(_) => {
                     return Err(NumberParsing);
                 }
             }
-        
+            
         } else {
             Err(NumberParsing)
         }
@@ -170,47 +224,45 @@ impl<'a> JsonParser<'a> {
 
     fn parse_string(&mut self) -> JsonResult {
         self.consume_whitespace();
-        let c = self.peek_next();
-        match c {
-            '\"' => {
+        
+        if self.ch_is('"') {
+            self.consume_char();
+            let mut found_end = false;
+            let mut s = String::new();
+            while !self.eof() {
+                if self.ch_is('"') {
+                    found_end = true;
+                    self.consume_char();
+                    break;
+                }
+                s.push(self.ch.unwrap());
                 self.consume_char();
-                let mut found_end = false;
-                let mut s = String::new();
-                while !self.eof() {
-                    let c = self.consume_char();
-                    if c == '"' {
-                        found_end = true;
-                        break;
-                    }
-                    s.push(c);
-                }
-                if found_end {
-                    Ok(Str(s))
-                } else {
-                    Err(UnclosedStringLiteral)
-                }
-            },
-            _ => Err(UnclosedStringLiteral)
+            }
+            if found_end {
+                Ok(Str(s))
+            } else {
+                Err(UnclosedStringLiteral)
+            }
+        }
+        else {
+            Err(UnclosedStringLiteral)
         }
     }
 
     fn parse_bool(&mut self) -> JsonResult {
         self.consume_whitespace();
-
-        let c = self.peek_next();
-        match c {
-            'f' => {
-                self.consume_text("false");
-                Ok(Bool(false))
-            }
-            't' => {
-                self.consume_text("true");
-                Ok(Bool(true))
-            }
-            _ => {
-                Err(ExpectedBool)
-            }
+        
+        if self.ch_is('f') {
+            self.consume_text("false");
+            return Ok(Bool(false));
         }
+        if self.ch_is('t')  {
+            self.consume_text("true");
+            return Ok(Bool(true));
+        }
+        else {
+            Err(ExpectedBool)
+        }   
     }
 
     fn parse_value(&mut self) -> JsonResult {        
@@ -232,32 +284,30 @@ impl<'a> JsonParser<'a> {
     }
 
     fn parse_array(&mut self) -> JsonResult {
-        let c = self.peek_next();
-        match c {
-            '[' => {
-                // Consume the opening bracket
-                self.consume_char();
-                let mut array = Vec::new();
+        if self.ch_is('[') {
+            // Consume the opening bracket
+            self.consume_char();
+            let mut array = Vec::new();
+            
+            loop {
+                let value = self.parse_value();
+                match value {
+                    Ok(v) => array.push(v),
+                    e @ Err(_) => return e
+                }
                 
-                loop {
-                    let value = self.parse_value();
-                    match value {
-                        Ok(v) => array.push(v),
-                        e @ Err(_) => return e
-                    }
-
-                    let next = self.peek_next();
-                    if next == ',' {
-                        self.consume_char();
-                        continue;
-                    }
-                    if next == ']' {
-                        self.consume_char();
-                        return Ok(Array(array));
-                    }
+                if self.ch_is(',') {
+                    self.consume_char();
+                    continue;
+                }
+                if self.ch_is(']') {
+                    self.consume_char();
+                    return Ok(Array(array));
                 }
             }
-            _ => Err(UnclosedArray)
+        }
+        else {
+            Err(UnclosedArray)
         }
     }
 
@@ -266,65 +316,54 @@ impl<'a> JsonParser<'a> {
             return Err(EndOfFile);
         }
         self.consume_whitespace();
-        let c = self.peek_next();
-        match c {
-            '{' => {
-                let mut object = HashMap::new();
-                self.consume_char();
-                loop {
-                    self.consume_whitespace();
+        if self.ch_is('{') {
+            let mut object = HashMap::new();
+            self.consume_char();
+            loop {
+                self.consume_whitespace();
 
-                    let key = self.parse_string();
-                    let key_string = match key {
-                        Ok(s) => s.get_string().unwrap(),
-                        Err(why) => return Err(why)
-                    };
+                let key = self.parse_string();
+                let key_string = match key {
+                    Ok(s) => s.get_string().unwrap(),
+                    Err(why) => return Err(why)
+                };
 
-                    self.consume_whitespace();
+                self.consume_whitespace();
 
-                    let next = self.peek_next();
-                    if next != ':' {
-                        return Err(ExpectedColon);
-                    }
-                    self.consume_whitespace();
-
-                    // Consume the colon
-                    self.consume_char();
-                    let value = self.parse_value();
-                    match value {
-                        Ok(v) => object.insert(key_string, v),
-                        e @ Err(_) => return e
-                    };
-                    self.consume_whitespace();
-                    
-                    let next = self.peek_next();
-                    if next == ',' {
-                        self.consume_char();
-                        continue;
-                    }
-                    if next == '}' {
-                        self.consume_char();
-                        return Ok(Object(object));
-                    }
+                if !self.ch_is(':') {
+                    return Err(ExpectedColon);
                 }
-            },
-            _ => Err(UnclosedObject)
+                self.consume_whitespace();
+
+                // Consume the colon
+                self.consume_char();
+                let value = self.parse_value();
+                match value {
+                    Ok(v) => object.insert(key_string, v),
+                    e @ Err(_) => return e
+                };
+                self.consume_whitespace();
+                
+                if self.ch_is(',') {
+                    self.consume_char();
+                    continue;
+                }
+                if self.ch_is('}') {
+                    self.consume_char();
+                    return Ok(Object(object));
+                }
+            }
         }
+        
+        else {
+            Err(UnclosedObject)
+        }
+        
     }
 
     pub fn parse(&mut self) -> JsonResult {
         self.parse_value()
     }
-
-}
-
-fn first_ok(results: Vec<JsonResult>) -> JsonResult {
-    for r in results.iter() {
-        if r.is_ok() {
-            return r.clone();
-        }
-    }
-    results[0].clone()
 }
 
 #[cfg(test)]
@@ -337,18 +376,18 @@ mod tests {
     use std::io::prelude::*;
     use std::io::BufReader;
     use std::path::Path;
-    use test::*;
+    //use test::*;
 
     #[test]
     fn parse_null() {
-        let mut parser = JsonParser::new("   null  ");
+        let mut parser = JsonParser::new("   null  ".chars());
         let result = parser.parse_null();
         assert_eq!(result, Ok(Null));
     }
 
     #[test]
     fn parse_number() {
-        let mut parser = JsonParser::new("  4.2342 ");
+        let mut parser = JsonParser::new("  4.2342 ".chars());
 
         let result = parser.parse_num();
         assert_eq!(result, Ok(Num(4.2342)));
@@ -356,14 +395,14 @@ mod tests {
 
     #[test]
     fn parse_number_2() {
-        let mut parser = JsonParser::new("  16237  ");
+        let mut parser = JsonParser::new("  16237  ".chars());
         let result = parser.parse_num();
         assert_eq!(result, Ok(Num(16237.0)));
     }
 
     #[test]
     fn parse_number_error() {
-        let mut parser = JsonParser::new("  abcdef  ");
+        let mut parser = JsonParser::new("  abcdef  ".chars());
         let result = parser.parse_num();
         match result {
             Ok(_) => assert!(false),
@@ -373,14 +412,14 @@ mod tests {
 
     #[test]
     fn parse_string() {
-        let mut parser = JsonParser::new("  \"String\" ");
+        let mut parser = JsonParser::new("  \"String\" ".chars());
         let result = parser.parse_string();
         assert_eq!(result, Ok(Str("String".to_string())));
     }
 
     #[test]
     fn parse_string_error() {
-        let mut parser = JsonParser::new("\"String");
+        let mut parser = JsonParser::new("\"String".chars());
         let result = parser.parse_string();
         match result {
             Ok(_) => assert!(false),
@@ -391,18 +430,18 @@ mod tests {
 
     #[test]
     fn parse_bool() {
-        let mut parser = JsonParser::new("false");
+        let mut parser = JsonParser::new("false".chars());
         let result = parser.parse_bool();
         assert_eq!(result, Ok(Bool(false)));
 
-        parser = JsonParser::new("true");
+        parser = JsonParser::new("true".chars());
         let result = parser.parse_bool();
         assert_eq!(result, Ok(Bool(true)));
     }
 
     #[test]
     fn parse_bool_array() {
-        let mut parser = JsonParser::new("[ true , true , true ]");
+        let mut parser = JsonParser::new("[ true , true , true ]".chars());
         let result = parser.parse_array();
         match result {
             Ok(val) => {
@@ -417,7 +456,7 @@ mod tests {
 
     #[test]
     fn parse_num_array() {
-        let mut parser = JsonParser::new("[1.2, 4.2, 1.2, 4.5]");
+        let mut parser = JsonParser::new("[1.2, 4.2, 1.2, 4.5]".chars());
         let result = parser.parse_array();
         match result {
             Ok(value) => {
@@ -432,7 +471,7 @@ mod tests {
 
     #[test]
     fn parse_nested_array() {
-        let mut parser = JsonParser::new("[[true, true], [true, false]]");
+        let mut parser = JsonParser::new("[[true, true], [true, false]]".chars());
         let result = parser.parse_value();
         match result {
             Ok(value) => {
@@ -449,7 +488,7 @@ mod tests {
 
     #[test]
     fn parse_object_simple() {
-        let mut parser = JsonParser::new("{\"label\" : 1.5}");
+        let mut parser = JsonParser::new("{\"label\" : 1.5}".chars());
         let result = parser.parse_object();
 
         let mut obj = HashMap::new();
@@ -460,7 +499,7 @@ mod tests {
 
     #[test]
     fn parse_object_array() {
-        let mut parser = JsonParser::new("{\"label\" : [true, true, true]}");
+        let mut parser = JsonParser::new("{\"label\" : [true, true, true]}".chars());
         let result = parser.parse_object();
 
         let mut obj = HashMap::new();
@@ -470,50 +509,71 @@ mod tests {
 
     }
     
-    fn big_json(count: usize) -> String {
-        let mut src = "[\n".to_string();
-        for _ in 0..count {
-            src.push_str(r#"{ "a": true, "b": null, "c":3.1415, "d": "Hello world", "e": \
-                            [1,2,3]},"#);
-        }
-        src.push_str("{}]");
-        return src;
+    #[test]
+    fn index_array() {
+    	let mut parser = JsonParser::new("[1, 2, 3, 4, 5]".chars());
+    	let result = parser.parse().unwrap();
+    	for i in 1..6 {
+    		assert_eq!(result[i-1], Num(i as f64));
+    	}
     }
+    
+    #[test]
+    fn index_object() {
+    	let mut parser = JsonParser::new("{\"label\" : 1.5}".chars());
+        let result = parser.parse_object().unwrap();
+        let indexed = result["label"].clone();
+        let expected = Num(1.5);
+        assert_eq!(indexed, expected);
+    }
+    
+    // fn big_json(count: usize) -> String {
+    //     let mut src = "[\n".to_string();
+    //     for _ in 0..count {
+    //         src.push_str(r#"{ "a": true, "b": null, "c":3.1415, "d": "Hello world", "e": \
+    //                         [1,2,3]},"#);
+    //     }
+    //     src.push_str("{}]");
+    //     return src;
+    // }
 
-
-    #[bench]
-    fn parse_small(b: &mut Bencher) {
-        let data = big_json(500);
+    // #[bench]
+    // fn parse_small(b: &mut Bencher) {
+    //     let data = big_json(500);
         
-        b.iter(|| {
-            let mut parser = JsonParser::new(&data);
-            black_box(parser.parse());
-        });
-    }
+    //     b.iter(|| {
+    //         let mut parser = JsonParser::new(data.chars());
+    //         black_box(parser.parse());
+    //     });
+    // }
 
-    #[bench]
-    fn parse_big(b: &mut Bencher) {
-        let data = big_json(5000);
+    // #[bench]
+    // fn parse_big(b: &mut Bencher) {
+    //     let data = big_json(5000);
         
-        b.iter(|| {
-            let mut parser = JsonParser::new(&data);
-            black_box(parser.parse());
-        });
-    }
+    //     b.iter(|| {
+    //         let mut parser = JsonParser::new(data.chars());
+    //         black_box(parser.parse());
+    //     });
+    // }
 }
 
 #[cfg(not(test))]
 fn main() {
     let args: Vec<String> = args().skip(1).collect();
-    let mut file = BufReader::new(File::open(args[0].clone()).unwrap());
+    let path = args[0].clone();
+    println!("{:?}", path);
+    let mut file = File::open(path).unwrap();
     let mut data = String::new();
-    file.read_to_string(&mut data);
+    file.read_to_string(&mut data).unwrap();
 
-    let mut parser = JsonParser::new(&data);
+    let mut parser = JsonParser::new(data.chars());
     let start = time::precise_time_ns();
     let parsed = parser.parse();
     let end = time::precise_time_ns();
     let duration = ((end as f64) - (start as f64)) / 1e9;
 
-    println!("{:?}", parsed);
+    //println!("{:?}", parsed);
+    println!("{:?}", duration);
+    
 }
