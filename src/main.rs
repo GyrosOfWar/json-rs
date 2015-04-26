@@ -10,7 +10,7 @@ use std::fs::File;
 use std::io::prelude::*;
 use std::ops::Index;
 use JsonValue::*;
-use JsonError::*;
+use ErrorCode::*;
 
 
 /// Representation of a JSON value. An array is
@@ -89,12 +89,17 @@ impl<'a> Index<&'a str> for JsonValue {
 	self.find(idx).expect("Can only index objects with &str!")
     }
 }
+/// Stores an error code and line/column information
+/// about where the error occurred for better debugging.
+#[derive(Debug, PartialEq)]
+pub struct JsonError {
+    pub reason: ErrorCode,
+    pub line: usize,
+    pub col: usize
+}
 
-/// Only simple error codes for now, I should probably
-/// wrap this in an actual Error struct that also stores
-/// line/column information about where the error occurred.
 #[derive(Debug, Clone, PartialEq)]
-pub enum JsonError {
+pub enum ErrorCode {
     UnclosedStringLiteral,
     UnclosedArray,
     UnclosedObject,
@@ -107,19 +112,19 @@ pub enum JsonError {
     Other
 }
 
-impl JsonError {
+impl ErrorCode {
     pub fn description(&self) -> &str {
         match *self {           
-            JsonError::UnclosedStringLiteral => "Unclosed string literal",
-            JsonError::UnclosedArray => "Unclosed array bracket",
-            JsonError::UnclosedObject => "Unclosed object bracket",
-            JsonError::MissingColon => "Missing colon",
-            JsonError::ExpectedBool => "Expected true or false",
-            JsonError::NumberParsing => "Error parsing number",
-            JsonError::ExpectedColon => "Expected colon",
-            JsonError::EndOfFile => "End of file reached",
-            JsonError::ExpectedNull => "Expected null",
-            JsonError::Other => "Unknown error"
+            ErrorCode::UnclosedStringLiteral => "Unclosed string literal",
+            ErrorCode::UnclosedArray => "Unclosed array bracket",
+            ErrorCode::UnclosedObject => "Unclosed object bracket",
+            ErrorCode::MissingColon => "Missing colon",
+            ErrorCode::ExpectedBool => "Expected true or false",
+            ErrorCode::NumberParsing => "Error parsing number",
+            ErrorCode::ExpectedColon => "Expected colon",
+            ErrorCode::EndOfFile => "End of file reached",
+            ErrorCode::ExpectedNull => "Expected null",
+            ErrorCode::Other => "Unknown error"
         }
     }
 }
@@ -127,7 +132,7 @@ impl JsonError {
 
 impl fmt::Display for JsonError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.description())
+        write!(f, "{}:{} error: {}", self.line, self.col, self.reason.description())
     }
 }
 
@@ -156,6 +161,14 @@ impl<T: Iterator<Item = char>> JsonParser<T> {
         };
         parser.consume_char();
         parser
+    }
+
+    fn error(&self, reason: ErrorCode) -> JsonResult {
+        Err(JsonError {
+            reason: reason,
+            line: self.line,
+            col: self.col
+        })
     }
 
     // Advances the character iterator by one and returns the new character
@@ -242,7 +255,7 @@ impl<T: Iterator<Item = char>> JsonParser<T> {
     fn parse_null(&mut self) -> JsonResult {
         match self.consume_text("null") {
             Some(_) => Ok(Null),
-            None => Err(ExpectedNull)
+            None => self.error(ExpectedNull)
         }
     }
 
@@ -257,12 +270,12 @@ impl<T: Iterator<Item = char>> JsonParser<T> {
             match n {
                 Ok(num) => return Ok(Num(num)),
                 Err(_) => {
-                    return Err(NumberParsing);
+                    return self.error(NumberParsing);
                 }
             }
             
         } else {
-            Err(NumberParsing)
+            self.error(NumberParsing)
         }
     }
     
@@ -286,11 +299,11 @@ impl<T: Iterator<Item = char>> JsonParser<T> {
             if found_end {
                 Ok(Str(s))
             } else {
-                Err(UnclosedStringLiteral)
+                self.error(UnclosedStringLiteral)
             }
         }
         else {
-            Err(UnclosedStringLiteral)
+            self.error(UnclosedStringLiteral)
         }
     }
 
@@ -307,7 +320,7 @@ impl<T: Iterator<Item = char>> JsonParser<T> {
             return Ok(Bool(true));
         }
         else {
-            Err(ExpectedBool)
+            self.error(ExpectedBool)
         }   
     }
     // Parses any JSON value, this is the entry point
@@ -360,13 +373,13 @@ impl<T: Iterator<Item = char>> JsonParser<T> {
             }
         }
         else {
-            Err(UnclosedArray)
+            self.error(UnclosedArray)
         }
     }
     // Parses a JSON object. Example: {"key": [1, 2, 3]}
     fn parse_object(&mut self) -> JsonResult {
         if self.eof() {
-            return Err(EndOfFile);
+            return self.error(EndOfFile);
         }
         self.consume_whitespace();
         if self.ch_is('{') {
@@ -378,14 +391,14 @@ impl<T: Iterator<Item = char>> JsonParser<T> {
                 let key = self.parse_string();
                 let key_string = match key {
                     Ok(s) => s.get_string().unwrap(),
-                    Err(why) => return Err(why)
+                    e @ Err(_) => return e
                 };
 
                 self.consume_whitespace();
 
                 // The separating colon between key and value
                 if !self.ch_is(':') {
-                    return Err(ExpectedColon);
+                    return self.error(ExpectedColon);
                 }
                 self.consume_whitespace();
                 self.consume_char();
@@ -412,7 +425,7 @@ impl<T: Iterator<Item = char>> JsonParser<T> {
         }
         
         else {
-            Err(UnclosedObject)
+            self.error(UnclosedObject)
         }
         
     }
@@ -426,7 +439,7 @@ impl<T: Iterator<Item = char>> JsonParser<T> {
 mod tests {
     use super::*;
     use super::JsonValue::*;
-    use super::JsonError::*;
+    use super::ErrorCode::*;
     use std::collections::HashMap;
     use std::fs::File;
     use std::io::prelude::*;
@@ -462,7 +475,7 @@ mod tests {
         let result = parser.parse_num();
         match result {
             Ok(_) => assert!(false),
-            Err(e) => assert_eq!(e, NumberParsing)
+            Err(e) => assert_eq!(e.reason, NumberParsing)
         }
     }
 
@@ -479,7 +492,7 @@ mod tests {
         let result = parser.parse_string();
         match result {
             Ok(_) => assert!(false),
-            Err(err) => assert_eq!(err, UnclosedStringLiteral)
+            Err(err) => assert_eq!(err.reason, UnclosedStringLiteral)
         }
         
     }
@@ -627,16 +640,17 @@ fn main() {
     
     let duration_ns = (duration_s * 1e9) as u64;
     let mut iters = 0;
-    let file_size = 136306;
-    
+    let file_size = data.len();
+
+    let mut results = Vec::new();
     loop {
         let elapsed = time::precise_time_ns() - start;
         if elapsed >= duration_ns {
             break;
         }
         let mut parser = JsonParser::new(data.chars());
-        let result = parser.parse().unwrap();
-
+        let result = parser.parse();
+        results.push(result);
         iters += 1;
     }
     let mbs_read = file_size as f64 * iters as f64 / (1000.0 * 1000.0);
