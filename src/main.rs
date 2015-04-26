@@ -590,18 +590,27 @@ mod tests {
 fn main() {
     let args: Vec<String> = args().skip(1).collect();
     let path = args[0].clone();
-    println!("{:?}", path);
     let mut file = File::open(path).unwrap();
     let mut data = String::new();
     file.read_to_string(&mut data).unwrap();
-
-    let mut parser = JsonParser::new(data.chars());
     let start = time::precise_time_ns();
-    let parsed = parser.parse();
-    let end = time::precise_time_ns();
-    let duration = ((end as f64) - (start as f64)) / 1e9;
 
-    //println!("{:?}", parsed);
-    println!("{:?}", duration);
+    let duration_s = 5.0;
     
+    let duration_ns = (duration_s * 1e9) as u64;
+    let mut iters = 0;
+    let file_size = 136306;
+    
+    loop {
+        let elapsed = time::precise_time_ns() - start;
+        if elapsed >= duration_ns {
+            break;
+        }
+        let mut parser = JsonParser::new(data.chars());
+        let result = parser.parse().unwrap();
+
+        iters += 1;
+    }
+    let mbs_read = file_size as f64 * iters as f64 / (1000.0 * 1000.0);
+    println!("{} MB/s", mbs_read / duration_s);
 }
