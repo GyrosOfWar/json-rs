@@ -35,7 +35,7 @@ impl JsonValue {
 	}
     }
     
-    pub fn get_string(self) -> Option<String> {
+    pub fn into_string(self) -> Option<String> {
         match self {
             JsonValue::Str(s) => Some(s),
             _ => None
@@ -56,19 +56,52 @@ impl JsonValue {
         }
     }
 
-    pub fn get_array(self) -> Option<Vec<JsonValue>> {
+    pub fn into_array(self) -> Option<Vec<JsonValue>> {
         match self {
             Array(vec) => Some(vec),
             _ => None
         }
     }
-    pub fn get_object(self) -> Option<HashMap<String, JsonValue>> {
+    
+    pub fn into_object(self) -> Option<HashMap<String, JsonValue>> {
         match self {
             Object(map) => Some(map),
             _ => None
         }
     }
-       
+}
+
+fn print_json(value: &JsonValue) -> String {
+    let mut result = String::new();
+
+    match *value {
+        Null => result.push_str("null"),
+        Bool(b) => result.push_str(&format!("{}", b)),
+        Num(n) => result.push_str(&format!("{}", n)),
+        Str(ref s) => result.push_str(&format!("{:?}", s)),
+        Array(ref values) => {
+            result.push('[');
+            for v in values.iter() {
+                result.push_str(&print_json(v));
+                result.push(',');
+            }
+            result.pop();
+            result.push(']');
+        },
+        Object(ref map) => {
+            result.push('{');
+            for (k, v) in map.iter() {
+                result.push_str(&format!("{:?}", k));
+                result.push(':');
+                result.push_str(&print_json(v));
+                result.push(',');
+            }
+            result.pop();
+            result.push('}');
+        }
+    }
+    
+    result
 }
 
 /// Indexing a JSON array
@@ -89,6 +122,13 @@ impl<'a> Index<&'a str> for JsonValue {
 	self.find(idx).expect("Can only index objects with &str!")
     }
 }
+// TODO
+impl fmt::Display for JsonValue {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", print_json(self))
+    }
+}
+
 /// Stores an error code and line/column information
 /// about where the error occurred for better debugging.
 #[derive(Debug, PartialEq)]
@@ -390,7 +430,7 @@ impl<T: Iterator<Item = char>> JsonParser<T> {
                 // The key is always a string value.
                 let key = self.parse_string();
                 let key_string = match key {
-                    Ok(s) => s.get_string().unwrap(),
+                    Ok(s) => s.into_string().unwrap(),
                     e @ Err(_) => return e
                 };
 
@@ -634,25 +674,30 @@ fn main() {
     let mut file = File::open(path).unwrap();
     let mut data = String::new();
     file.read_to_string(&mut data).unwrap();
-    let start = time::precise_time_ns();
 
-    let duration_s = 5.0;
+    let mut parser = JsonParser::new(data.chars());
+    let result = parser.parse().unwrap();
+    println!("{}", result);
+
+    // let start = time::precise_time_ns();
+
+    // let duration_s = 5.0;
     
-    let duration_ns = (duration_s * 1e9) as u64;
-    let mut iters = 0;
-    let file_size = data.len();
+    // let duration_ns = (duration_s * 1e9) as u64;
+    // let mut iters = 0;
+    // let file_size = data.len();
 
-    let mut results = Vec::new();
-    loop {
-        let elapsed = time::precise_time_ns() - start;
-        if elapsed >= duration_ns {
-            break;
-        }
-        let mut parser = JsonParser::new(data.chars());
-        let result = parser.parse();
-        results.push(result);
-        iters += 1;
-    }
-    let mbs_read = file_size as f64 * iters as f64 / (1000.0 * 1000.0);
-    println!("{} MB/s", mbs_read / duration_s);
+    // let mut results = Vec::new();
+    // loop {
+    //     let elapsed = time::precise_time_ns() - start;
+    //     if elapsed >= duration_ns {
+    //         break;
+    //     }
+    //     let mut parser = JsonParser::new(data.chars());
+    //     let result = parser.parse();
+    //     results.push(result);
+    //     iters += 1;
+    // }
+    // let mbs_read = file_size as f64 * iters as f64 / (1000.0 * 1000.0);
+    // println!("{} MB/s", mbs_read / duration_s);
 }
